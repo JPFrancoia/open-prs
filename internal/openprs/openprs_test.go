@@ -5,10 +5,13 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	ent "open-prs/internal/entities"
 )
 
 // TestRun checks the real CLI command path with local forge executables.
@@ -33,13 +36,78 @@ printf '%s' '{"data":{"project":{"mergeRequests":{"nodes":[{"title":"Fix","webUr
 		t.Fatalf("status %d, stderr %q", status, errs.String())
 	}
 	text := out.String()
-	for _, want := range []string{"### a/b", "### g/r", "New —", "Old —", "Fix —", "(approved) [alice]", "(approved) [bob]", "[unknown]", "https://github.com/a/b/pull/2"} {
+	for _, want := range []string{"### a/b", "### g/r", "- **[New](<https://github.com/a/b/pull/2>)", "[Old](<https://github.com/a/b/pull/1>)", "[Fix](<https://gitlab.com/g/r/-/merge_requests/1>)", "**approved** · alice", "**approved** · bob", "· unknown"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("missing %q from %q", want, text)
 		}
 	}
-	if strings.Index(text, "New —") > strings.Index(text, "Old —") || strings.Index(text, "### g/r") < strings.Index(text, "### a/b") {
+	if strings.Index(text, "[New]") > strings.Index(text, "[Old]") || strings.Index(text, "### g/r") < strings.Index(text, "### a/b") {
 		t.Errorf("unexpected order: %q", text)
+	}
+}
+
+// TestMarkdownLink escapes untrusted titles and rejects non-HTTP link schemes.
+func TestMarkdownLink(t *testing.T) {
+	request := ent.Request{Title: "Fix [api] *now*\x1b[31m", Url: "https://github.com/a/b/pull/1"}
+	if got, want := requestLink(request), "[Fix \\[api\\] \\*now\\* \\[31m](<https://github.com/a/b/pull/1>)"; got != want {
+		t.Fatalf("link %q, want %q", got, want)
+	}
+	request.Url = "javascript:alert(1)"
+	if got := requestLink(request); strings.Contains(got, "](<") || !strings.Contains(got, "javascript:alert(1)") {
+		t.Fatalf("unsafe URL rendered as link: %q", got)
+	}
+}
+
+// TestTerminalRendering exercises Run through a pseudo-terminal and a pipe.
+func TestTerminalRendering(t *testing.T) {
+	if _, err := exec.LookPath("script"); err != nil {
+		t.Skip("script is needed to test a pseudo-terminal")
+	}
+	dir := t.TempDir()
+	binary := filepath.Join(dir, "open-prs")
+	build := exec.Command("go", "build", "-o", binary, "../../cmd/server")
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build CLI: %s: %v", output, err)
+	}
+	content := "#!/bin/sh\necho '[{\"title\":\"x\",\"url\":\"https://github.com/a/b/pull/1\",\"createdAt\":\"2024-01-01T00:00:00Z\"}]'\n"
+	if err := os.WriteFile(filepath.Join(dir, "gh"), []byte(content), 0700); err != nil {
+		t.Fatal(err)
+	}
+	env := []string{"PATH=" + dir + string(os.PathListSeparator) + os.Getenv("PATH"), "REPOS=github.com/a/b", "TERM=xterm-256color"}
+	for _, test := range []struct {
+		name     string
+		terminal bool
+		env      []string
+		styled   bool
+	}{
+		{name: "terminal", terminal: true, styled: true},
+		{name: "pipe"},
+		{name: "no color", terminal: true, env: []string{"NO_COLOR=1"}},
+		{name: "dumb terminal", terminal: true, env: []string{"TERM=dumb"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var command *exec.Cmd
+			if test.terminal {
+				command = exec.Command("script", "-q", "-c", binary, "/dev/null")
+			} else {
+				command = exec.Command(binary)
+			}
+			command.Env = append(append([]string{}, env...), test.env...)
+			output, err := command.CombinedOutput()
+			if err != nil {
+				t.Fatalf("run CLI: %s: %v", output, err)
+			}
+			if strings.Contains(string(output), "\x1b[") != test.styled {
+				t.Errorf("styled = %v, want %v: %q", strings.Contains(string(output), "\x1b["), test.styled, output)
+			}
+			if test.terminal && test.name != "dumb terminal" {
+				if !strings.Contains(string(output), "\x1b]8;;https://github.com/a/b/pull/1\x1b\\x\x1b]8;;\x1b\\") || strings.Contains(string(output), "[x](<") {
+					t.Errorf("title is not a clickable terminal link: %q", output)
+				}
+			} else if !strings.Contains(string(output), "- **[x](<https://github.com/a/b/pull/1>)**") {
+				t.Errorf("missing Markdown link: %q", output)
+			}
+		})
 	}
 }
 

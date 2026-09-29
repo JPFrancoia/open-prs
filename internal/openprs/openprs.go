@@ -4,14 +4,19 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"html"
 	"io"
 	"net/url"
+	"os"
 	"os/exec"
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	ent "open-prs/internal/entities"
+
+	"golang.org/x/term"
 )
 
 // githubRequest and gitlabResponse are the response shapes of the forge CLIs.
@@ -159,6 +164,42 @@ func age(createdAt, now time.Time) string {
 	return fmt.Sprintf("%dd ago", hours/24)
 }
 
+// plainText removes terminal controls from forge-provided text.
+func plainText(value string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return ' '
+		}
+		return r
+	}, value)
+}
+
+// markdownText escapes forge-provided text before inserting it into Markdown.
+func markdownText(value string) string {
+	return strings.NewReplacer(`\`, `\\`, `[`, `\[`, `]`, `\]`, `*`, `\*`, `_`, `\_`, "`", "\\`", `~`, `\~`).Replace(html.EscapeString(plainText(value)))
+}
+
+// safeUrl accepts only HTTP links and removes Markdown delimiter characters.
+func safeUrl(value string) string {
+	if strings.IndexFunc(value, unicode.IsControl) >= 0 {
+		return ""
+	}
+	address, err := url.Parse(value)
+	if err != nil || (address.Scheme != "https" && address.Scheme != "http") || address.Host == "" {
+		return ""
+	}
+	return strings.NewReplacer("<", "%3C", ">", "%3E").Replace(address.String())
+}
+
+// requestLink formats a safe HTTP link or leaves an invalid URL as plain text.
+func requestLink(request ent.Request) string {
+	title := markdownText(request.Title)
+	if address := safeUrl(request.Url); address != "" {
+		return fmt.Sprintf("[%s](<%s>)", title, address)
+	}
+	return title + " (" + markdownText(request.Url) + ")"
+}
+
 // Run prints the configured open requests and returns a nonzero status on errors.
 func Run(ctx context.Context, value string, out, errs io.Writer) int {
 	repos, problems := parseRepos(value)
@@ -166,7 +207,8 @@ func Run(ctx context.Context, value string, out, errs io.Writer) int {
 		problems = append(problems, "REPOS is not set (comma-separated list of GitLab/GitHub repository URLs).")
 	}
 	now := time.Now()
-repositories:
+	var groups, terminalGroups []string
+	_, noColor := os.LookupEnv("NO_COLOR")
 	for _, repo := range repos {
 		requests, err := fetch(ctx, repo)
 		if err != nil {
@@ -177,23 +219,49 @@ repositories:
 			continue
 		}
 		sort.Slice(requests, func(i, j int) bool { return requests[i].CreatedAt.After(requests[j].CreatedAt) })
-		if _, err := fmt.Fprintf(out, "### %s\n", repo.Path); err != nil {
-			problems = append(problems, fmt.Sprintf("write %s: %v", repo.Path, err))
-			break
+		lines := []string{"### " + markdownText(repo.Path)}
+		heading := plainText(repo.Path)
+		if !noColor {
+			heading = "\x1b[1;36m" + heading + "\x1b[0m"
 		}
+		terminalLines := []string{"▌ " + heading}
 		for _, request := range requests {
 			approved := ""
 			if request.Approved {
-				approved = " (approved)"
+				approved = " · **approved**"
 			}
-			if _, err := fmt.Fprintf(out, "- %s — %s%s [%s]\n  %s\n", request.Title, age(request.CreatedAt, now), approved, request.Author, request.Url); err != nil {
-				problems = append(problems, fmt.Sprintf("write %s: %v", repo.Path, err))
-				break repositories
+			lines = append(lines, fmt.Sprintf("- **%s** — *%s*%s · %s", requestLink(request), age(request.CreatedAt, now), approved, markdownText(request.Author)))
+			title := plainText(request.Title)
+			if address := safeUrl(request.Url); address != "" {
+				title = "\x1b]8;;" + address + "\x1b\\" + title + "\x1b]8;;\x1b\\"
+			} else {
+				title += " (" + plainText(request.Url) + ")"
 			}
+			elapsed, author := age(request.CreatedAt, now), plainText(request.Author)
+			if !noColor {
+				title = "\x1b[1;34;4m" + title + "\x1b[0m"
+				elapsed = "\x1b[2m" + elapsed + "\x1b[0m"
+				author = "\x1b[2m" + author + "\x1b[0m"
+			}
+			badge := ""
+			if request.Approved {
+				badge = "  ✓ approved"
+				if !noColor {
+					badge = "  \x1b[1;32m✓ approved\x1b[0m"
+				}
+			}
+			terminalLines = append(terminalLines, fmt.Sprintf("  • %s  %s%s  %s", title, elapsed, badge, author))
 		}
-		if _, err := fmt.Fprintln(out); err != nil {
-			problems = append(problems, fmt.Sprintf("write %s: %v", repo.Path, err))
-			break
+		groups = append(groups, strings.Join(lines, "\n"))
+		terminalGroups = append(terminalGroups, strings.Join(terminalLines, "\n"))
+	}
+	if len(groups) > 0 {
+		output := strings.Join(groups, "\n\n") + "\n"
+		if file, ok := out.(*os.File); ok && term.IsTerminal(int(file.Fd())) && os.Getenv("TERM") != "dumb" {
+			output = strings.Join(terminalGroups, "\n\n") + "\n"
+		}
+		if _, err := io.WriteString(out, output); err != nil {
+			problems = append(problems, fmt.Sprintf("write output: %v", err))
 		}
 	}
 	for _, problem := range problems {

@@ -22,6 +22,6 @@ Set `REPOS` to a comma-separated list of GitHub and GitLab repository URLs. Then
 REPOS=https://github.com/OWNER/REPOSITORY,https://gitlab.com/GROUP/PROJECT ./open-prs
 ```
 
-The program prints each repository name, request title, age, approval status, author, and URL. It prints at most 100 open requests for each repository.
+The program prints each repository name, request title, age, approval status, and author. In a terminal, titles are clickable links if the terminal supports OSC 8 hyperlinks. It uses color unless you set `NO_COLOR`. When piped or used with `TERM=dumb`, it prints Markdown links with their URLs. It prints at most 100 open requests for each repository.
 
 If one repository fails, the program prints the error to standard error. It continues with the other repositories and exits with status 1.
