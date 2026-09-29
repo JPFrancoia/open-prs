@@ -36,7 +36,7 @@ printf '%s' '{"data":{"project":{"mergeRequests":{"nodes":[{"title":"Fix","webUr
 		t.Fatalf("status %d, stderr %q", status, errs.String())
 	}
 	text := out.String()
-	for _, want := range []string{"### a/b", "### g/r", "- **[New](<https://github.com/a/b/pull/2>)", "[Old](<https://github.com/a/b/pull/1>)", "[Fix](<https://gitlab.com/g/r/-/merge_requests/1>)", "**approved** · alice", "**approved** · bob", "· unknown"} {
+	for _, want := range []string{"### a/b", "### g/r", "- **[New](<https://github.com/a/b/pull/2>)", "[Old](<https://github.com/a/b/pull/1>)", "[Fix](<https://gitlab.com/g/r/-/merge_requests/1>)", "**approved** · [alice]", "**approved** · [bob]", "· [unknown]"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("missing %q from %q", want, text)
 		}
@@ -100,6 +100,15 @@ func TestTerminalRendering(t *testing.T) {
 			if strings.Contains(string(output), "\x1b[") != test.styled {
 				t.Errorf("styled = %v, want %v: %q", strings.Contains(string(output), "\x1b["), test.styled, output)
 			}
+			if test.styled {
+				for _, style := range []string{"\x1b[1;34;4m", "\x1b[33m", "\x1b[35m[unknown]\x1b[0m"} {
+					if !strings.Contains(string(output), style) {
+						t.Errorf("missing distinct style %q from %q", style, output)
+					}
+				}
+			} else if !strings.Contains(string(output), "[unknown]") {
+				t.Errorf("author lacks square brackets: %q", output)
+			}
 			if test.terminal && test.name != "dumb terminal" {
 				if !strings.Contains(string(output), "\x1b]8;;https://github.com/a/b/pull/1\x1b\\x\x1b]8;;\x1b\\") || strings.Contains(string(output), "[x](<") {
 					t.Errorf("title is not a clickable terminal link: %q", output)
@@ -108,6 +117,40 @@ func TestTerminalRendering(t *testing.T) {
 				t.Errorf("missing Markdown link: %q", output)
 			}
 		})
+	}
+}
+
+// TestParallelFetch proves all requests start together and display in configured order despite a failure.
+func TestParallelFetch(t *testing.T) {
+	dir := t.TempDir()
+	content := `#!/bin/sh
+for arg in "$@"; do
+  case "$arg" in
+    github.com/a/slow) name=slow ;;
+    github.com/a/fast) name=fast ;;
+    github.com/a/fail) echo 'failed on purpose' >&2; exit 1 ;;
+  esac
+done
+touch "$MARKER_DIR/$name"
+while [ ! -f "$MARKER_DIR/slow" ] || [ ! -f "$MARKER_DIR/fast" ]; do sleep 0.02; done
+if [ "$name" = slow ]; then sleep 0.1; fi
+printf '[{"title":"%s","url":"https://github.com/a/%s/pull/1","createdAt":"2024-01-01T00:00:00Z"}]' "$name" "$name"
+`
+	if err := os.WriteFile(filepath.Join(dir, "gh"), []byte(content), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("MARKER_DIR", dir)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	var out, errs bytes.Buffer
+	status := Run(ctx, "github.com/a/slow,github.com/a/fail,github.com/a/fast", &out, &errs)
+	if status != 1 || !strings.Contains(errs.String(), "failed on purpose") {
+		t.Fatalf("status %d, stderr %q", status, errs.String())
+	}
+	text := out.String()
+	if !strings.Contains(text, "[slow]") || !strings.Contains(text, "[fast]") || strings.Index(text, "### a/slow") > strings.Index(text, "### a/fast") {
+		t.Errorf("parallel results lost or out of order: %q", text)
 	}
 }
 

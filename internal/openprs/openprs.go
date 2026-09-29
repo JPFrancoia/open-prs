@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -47,6 +48,12 @@ type gitlabResponse struct {
 	Errors []struct {
 		Message string `json:"message"`
 	} `json:"errors"`
+}
+
+// fetchResult holds one repository's request list or fetch error.
+type fetchResult struct {
+	requests []ent.Request
+	err      error
 }
 
 // parseRepos reads the comma-separated REPOS list in its configured order.
@@ -207,10 +214,18 @@ func Run(ctx context.Context, value string, out, errs io.Writer) int {
 		problems = append(problems, "REPOS is not set (comma-separated list of GitLab/GitHub repository URLs).")
 	}
 	now := time.Now()
+	results := make([]fetchResult, len(repos))
+	var wg sync.WaitGroup
+	for i, repo := range repos {
+		wg.Go(func() {
+			results[i].requests, results[i].err = fetch(ctx, repo)
+		})
+	}
+	wg.Wait()
 	var groups, terminalGroups []string
 	_, noColor := os.LookupEnv("NO_COLOR")
-	for _, repo := range repos {
-		requests, err := fetch(ctx, repo)
+	for i, repo := range repos {
+		requests, err := results[i].requests, results[i].err
 		if err != nil {
 			problems = append(problems, err.Error())
 			continue
@@ -230,18 +245,18 @@ func Run(ctx context.Context, value string, out, errs io.Writer) int {
 			if request.Approved {
 				approved = " · **approved**"
 			}
-			lines = append(lines, fmt.Sprintf("- **%s** — *%s*%s · %s", requestLink(request), age(request.CreatedAt, now), approved, markdownText(request.Author)))
+			lines = append(lines, fmt.Sprintf("- **%s** — *%s*%s · [%s]", requestLink(request), age(request.CreatedAt, now), approved, markdownText(request.Author)))
 			title := plainText(request.Title)
 			if address := safeUrl(request.Url); address != "" {
 				title = "\x1b]8;;" + address + "\x1b\\" + title + "\x1b]8;;\x1b\\"
 			} else {
 				title += " (" + plainText(request.Url) + ")"
 			}
-			elapsed, author := age(request.CreatedAt, now), plainText(request.Author)
+			elapsed, author := age(request.CreatedAt, now), "["+plainText(request.Author)+"]"
 			if !noColor {
 				title = "\x1b[1;34;4m" + title + "\x1b[0m"
-				elapsed = "\x1b[2m" + elapsed + "\x1b[0m"
-				author = "\x1b[2m" + author + "\x1b[0m"
+				elapsed = "\x1b[33m" + elapsed + "\x1b[0m"
+				author = "\x1b[35m" + author + "\x1b[0m"
 			}
 			badge := ""
 			if request.Approved {
