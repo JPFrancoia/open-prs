@@ -223,6 +223,8 @@ func Run(ctx context.Context, value string, out, errs io.Writer) int {
 	}
 	wg.Wait()
 	var groups, terminalGroups []string
+	total := 0
+	succeeded := false
 	_, noColor := os.LookupEnv("NO_COLOR")
 	for i, repo := range repos {
 		requests, err := results[i].requests, results[i].err
@@ -230,16 +232,18 @@ func Run(ctx context.Context, value string, out, errs io.Writer) int {
 			problems = append(problems, err.Error())
 			continue
 		}
+		succeeded = true
+		total += len(requests)
 		if len(requests) == 0 {
 			continue
 		}
 		sort.Slice(requests, func(i, j int) bool { return requests[i].CreatedAt.After(requests[j].CreatedAt) })
-		lines := []string{"### " + markdownText(repo.Path)}
+		lines := []string{fmt.Sprintf("### %s (%d)", markdownText(repo.Path), len(requests))}
 		heading := plainText(repo.Path)
 		if !noColor {
 			heading = "\x1b[1;36m" + heading + "\x1b[0m"
 		}
-		terminalLines := []string{"▌ " + heading}
+		terminalLines := []string{fmt.Sprintf("▌ %s (%d)", heading, len(requests))}
 		for _, request := range requests {
 			approved := ""
 			if request.Approved {
@@ -270,10 +274,16 @@ func Run(ctx context.Context, value string, out, errs io.Writer) int {
 		groups = append(groups, strings.Join(lines, "\n"))
 		terminalGroups = append(terminalGroups, strings.Join(terminalLines, "\n"))
 	}
-	if len(groups) > 0 {
-		output := strings.Join(groups, "\n\n") + "\n"
+	if succeeded {
+		output := fmt.Sprintf("Total: %d\n", total)
+		if len(groups) > 0 {
+			output += "\n" + strings.Join(groups, "\n\n") + "\n"
+		}
 		if file, ok := out.(*os.File); ok && term.IsTerminal(int(file.Fd())) && os.Getenv("TERM") != "dumb" {
-			output = strings.Join(terminalGroups, "\n\n") + "\n"
+			output = fmt.Sprintf("Total: %d\n", total)
+			if len(terminalGroups) > 0 {
+				output += "\n" + strings.Join(terminalGroups, "\n\n") + "\n"
+			}
 		}
 		if _, err := io.WriteString(out, output); err != nil {
 			problems = append(problems, fmt.Sprintf("write output: %v", err))

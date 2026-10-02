@@ -36,12 +36,12 @@ printf '%s' '{"data":{"project":{"mergeRequests":{"nodes":[{"title":"Fix","webUr
 		t.Fatalf("status %d, stderr %q", status, errs.String())
 	}
 	text := out.String()
-	for _, want := range []string{"### a/b", "### g/r", "- **[New](<https://github.com/a/b/pull/2>)", "[Old](<https://github.com/a/b/pull/1>)", "[Fix](<https://gitlab.com/g/r/-/merge_requests/1>)", "**approved** · [alice]", "**approved** · [bob]", "· [unknown]"} {
+	for _, want := range []string{"Total: 3", "### a/b (2)", "### g/r (1)", "- **[New](<https://github.com/a/b/pull/2>)", "[Old](<https://github.com/a/b/pull/1>)", "[Fix](<https://gitlab.com/g/r/-/merge_requests/1>)", "**approved** · [alice]", "**approved** · [bob]", "· [unknown]"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("missing %q from %q", want, text)
 		}
 	}
-	if strings.Index(text, "[New]") > strings.Index(text, "[Old]") || strings.Index(text, "### g/r") < strings.Index(text, "### a/b") {
+	if strings.Index(text, "Total: 3") > strings.Index(text, "### a/b") || strings.Index(text, "[New]") > strings.Index(text, "[Old]") || strings.Index(text, "### g/r") < strings.Index(text, "### a/b") {
 		t.Errorf("unexpected order: %q", text)
 	}
 }
