@@ -1,6 +1,7 @@
 # Open PRs
 
 Open PRs lists open GitHub pull requests and GitLab merge requests from the repositories in `REPOS`.
+This is a simple vibe-coded tool to keep track of all the PRs opened by my agents for a project (which can include many git repos)
 
 ## Prerequisites
 
